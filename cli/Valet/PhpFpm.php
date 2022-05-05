@@ -10,28 +10,28 @@ class PhpFpm
     const PHP_FORMULA_NAME = 'php';
 //    const PHP_V56_VERSION = '5.6';
 //    const PHP_V70_VERSION = '7.0';
-    const PHP_V71_VERSION = '7.1';
+//    const PHP_V71_VERSION = '7.1';
     const PHP_V72_VERSION = '7.2';
     const PHP_V73_VERSION = '7.3';
     const PHP_V74_VERSION = '7.4';
     const PHP_V80_VERSION = '8.0';
-//    const PHP_V81_VERSION = '8.1';
+    const PHP_V81_VERSION = '8.1';
 
     const SUPPORTED_PHP_FORMULAE = [
 //        self::PHP_V56_VERSION => self::PHP_FORMULA_NAME . self::PHP_V56_VERSION,
-//        self::PHP_V70_VERSION => self::PHP_FORMULA_NAME .'@'. self::PHP_V70_VERSION,
-        self::PHP_V71_VERSION => self::PHP_FORMULA_NAME .'@'. self::PHP_V71_VERSION,
+//        self::PHP_V70_VERSION => self::PHP_FORMULA_NAME . self::PHP_V70_VERSION,
+//        self::PHP_V71_VERSION => self::PHP_FORMULA_NAME . self::PHP_V71_VERSION,
         self::PHP_V72_VERSION => self::PHP_FORMULA_NAME .'@'. self::PHP_V72_VERSION,
         self::PHP_V73_VERSION => self::PHP_FORMULA_NAME .'@'. self::PHP_V73_VERSION,
         self::PHP_V74_VERSION => self::PHP_FORMULA_NAME .'@'. self::PHP_V74_VERSION,
         self::PHP_V80_VERSION => self::PHP_FORMULA_NAME .'@'. self::PHP_V80_VERSION,
-//        self::PHP_V81_VERSION => self::PHP_FORMULA_NAME
+        self::PHP_V81_VERSION => self::PHP_FORMULA_NAME
     ];
 
     const EOL_PHP_VERSIONS = [
 //        self::PHP_V56_VERSION,
 //        self::PHP_V70_VERSION,
-        self::PHP_V71_VERSION,
+//        self::PHP_V71_VERSION,
         self::PHP_V72_VERSION,
         self::PHP_V73_VERSION
     ];
@@ -147,12 +147,12 @@ class PhpFpm
     {
         $brewPath = $this->architecture->getBrewPath();
         $confLookup = [
-//            self::PHP_V81_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '8.1/php-fpm.d/www.conf',
+            self::PHP_V81_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '8.1/php-fpm.d/www.conf',
             self::PHP_V80_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '8.0/php-fpm.d/www.conf',
             self::PHP_V74_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '7.4/php-fpm.d/www.conf',
             self::PHP_V73_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '7.3/php-fpm.d/www.conf',
             self::PHP_V72_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '7.2/php-fpm.d/www.conf',
-            self::PHP_V71_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '7.1/php-fpm.d/www.conf',
+//            self::PHP_V71_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '7.1/php-fpm.d/www.conf',
 //            self::PHP_V70_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '7.0/php-fpm.d/www.conf',
 //            self::PHP_V56_VERSION => $brewPath . self::LOCAL_PHP_FOLDER . '5.6/php-fpm.conf',
         ];
@@ -179,21 +179,15 @@ class PhpFpm
      */
     public function switchTo($version)
     {
-        $currentVersion = $this->linkedPhp();
-//var_dump($currentVersion);
-        if (!array_key_exists($version, self::SUPPORTED_PHP_FORMULAE)) {
-            throw new DomainException(
-                "This version of PHP not available. The following versions are available: " . implode(
-                    ' ',
-                    array_keys(self::SUPPORTED_PHP_FORMULAE)
-                )
-            );
-        }
+        $version = $this->validateRequestedVersion($version);
 
         // If the current version equals that of the current PHP version, do not switch.
-        if ($version === $currentVersion) {
-            info('Already on this version');
-            return;
+        try {
+            if ($this->linkedPhp() === $version) {
+                info('Already on this version');
+                return;
+            }
+        } catch (DomainException $e) { /* ignore error when linked php isn't found */
         }
 
         if (in_array($version, self::EOL_PHP_VERSIONS)) {
@@ -203,13 +197,14 @@ class PhpFpm
 
         $installed = $this->brew->installed(self::PHP_FORMULA_PREFIX. self::SUPPORTED_PHP_FORMULAE[$version]);
 //var_dump($installed);
+
         if (!$installed) {
             $this->brew->ensureInstalled(self::PHP_FORMULA_PREFIX.self::SUPPORTED_PHP_FORMULAE[$version]);
         }
 
-        // Unlink the current PHP version.
-        if (!$this->unlinkPhp($currentVersion)) {
-            return;
+        // Unlink the current PHP version if one is linked
+        if ($this->hasLinkedPhp()) {
+            $this->unlinkPhp($this->linkedPhp());
         }
 
         // Relink libjpeg
@@ -218,13 +213,16 @@ class PhpFpm
             'sudo ln -fs /usr/local/Cellar/jpeg/8d/lib/libjpeg.8.dylib /usr/local/opt/jpeg/lib/libjpeg.8.dylib'
         );
 //var_dump($version, $currentVersion);
-        if (!$this->linkPhp($version, $currentVersion)) {
+        if (!$this->linkPhp($version)) {
             return;
         }
 
         $this->stop();
         $this->install();
-        info("Valet is now using " . self::SUPPORTED_PHP_FORMULAE[$version]);
+
+        $version = self::SUPPORTED_PHP_FORMULAE[$version];
+        $newVersion = $version === 'php' ? $this->brew->determineAliasedVersion($version) : $version;
+        info("Valet is now using " . $newVersion);
     }
 
     /**
@@ -293,6 +291,16 @@ class PhpFpm
         }
 
         return $isUnlinked;
+    }
+
+    /**
+     * Whether PHP is linked or not
+     *
+     * @return bool
+     */
+    public function hasLinkedPhp()
+    {
+        return $this->files->isLink($this->architecture->getBrewPath() . '/bin/php');
     }
 
     /**
@@ -494,11 +502,15 @@ class PhpFpm
 //var_dump($phpPath);
         $resolvedPath = $this->files->readLink($phpPath);
 //var_dump($resolvedPath);
+
+        preg_match('~\w{3,}/(php)(@?\d\.?\d)?/(\d\.\d)?([_\d\.]*)?/?\w{3,}~', $resolvedPath, $matches);
+        $resolvedPhpVersion = $matches[3] ?: $matches[2];
+
         $versions = self::SUPPORTED_PHP_FORMULAE;
 //var_dump($versions);
         foreach ($versions as $version => $brewname) {
-            if (strpos($resolvedPath, '/php@' . $version . '/') !== false) {
-                return $version;
+            if ($resolvedPhpVersion === $version) {
+                return $resolvedPhpVersion;
             }
         }
 
@@ -513,7 +525,7 @@ class PhpFpm
     public function hasInstalledPhp()
     {
         foreach (self::SUPPORTED_PHP_FORMULAE as $version => $brewName) {
-            if ($this->brew->installed(self::PHP_FORMULA_PREFIX.self::PHP_FORMULA_PREFIX.$brewName)) {
+            if ($this->brew->installed(self::PHP_FORMULA_PREFIX . $brewName)) {
                 return true;
             }
         }
@@ -623,5 +635,36 @@ class PhpFpm
             "\nLinked PHP should be php 7.4:"
         );
         output($this->cli->runAsUser('php -v'));
+    }
+
+    /**
+     * If passed php7.4, or php74, 7.4, or 74 formats, normalize to php@7.4 format.
+     */
+    public function normalizePhpVersion($version)
+    {
+        return preg_replace('/(?:php@?)?([0-9+])(?:.)?([0-9+])/i', 'php@$1.$2', $version);
+    }
+
+    /**
+     * Validate the requested version to be sure we can support it.
+     *
+     * @param string $version
+     * @return string
+     */
+    public function validateRequestedVersion($version)
+    {
+        $version = $this->normalizePhpVersion($version);
+        $version = preg_replace('~[^\d\.]~', '', $version);
+
+        if (!array_key_exists($version, self::SUPPORTED_PHP_FORMULAE)) {
+            throw new DomainException(
+                "This version of PHP not available. The following versions are available: " . implode(
+                    ' ',
+                    array_keys(self::SUPPORTED_PHP_FORMULAE)
+                )
+            );
+        }
+
+        return $version;
     }
 }
